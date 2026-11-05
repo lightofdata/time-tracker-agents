@@ -1,0 +1,14 @@
+{
+  "name": "time-tracker",
+  "displayName": "Time Tracker",
+  "version": "0.1.0",
+  "description": "Turns your Claude Code sessions into suggested time entries in the Time Tracker app, ready to confirm.",
+  "author": {
+    "name": "Light of Data",
+    "url": "https://github.com/lightofdata"
+  },
+  "homepage": "https://github.com/lightofdata/time-tracker-agents",
+  "repository": "https://github.com/lightofdata/time-tracker-agents",
+  "license": "MIT",
+  "keywords": ["time tracking", "timesheet", "productivity"]
+}

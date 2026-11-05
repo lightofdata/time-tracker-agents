@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+# Connects this computer to Time Tracker, so the agent hook (tt-heartbeat.sh)
+# can report activity without a token copied by hand.
+#
+# Usage:
+#   tt-connect [SERVER]        start, then wait: for a terminal
+#   tt-connect start [SERVER]  show a code to enter in the app, and return
+#   tt-connect wait            wait for the code's approval, then save the token
+#
+# /time-tracker:connect runs start and wait as two steps, so the code reaches
+# the user before the wait begins. SERVER is `production` or `staging`, short
+# enough to type from the app's screen, or a functions URL,
+# https://<project>.supabase.co/functions/v1. Without it: TT_FUNCTIONS_URL,
+# then production.
+#
+# How it pairs, as a TV does (RFC 8628's device authorization grant):
+#
+#   1. It draws a personal API token here, and offers the server only its
+#      hash.
+#   2. The server answers with a short code, which this shows.
+#   3. The user enters the code in the app and approves.
+#   4. Meanwhile this asks, every few seconds, whether the token is valid yet.
+#      Once it is, it saves it, with the heartbeat URL, to the hook's config.
+#
+# The token never leaves this computer before it is first used: approval
+# makes a token this already holds valid, so there is nothing to send back.
+# It is never printed either: between start and wait it waits in a file only
+# the user can read.
+#
+# Needs bash and curl, and sha256sum or shasum; not jq. The replies are small
+# and the server's own, so a field is read with sed.
+
+set -u
+
+production_url="https://vvytmkxwkgeagtavping.supabase.co/functions/v1"
+# Where the app's test builds connect, so testers can type a name, not a URL.
+staging_url="https://xmtayjffukasyjctgnqo.supabase.co/functions/v1"
+config_file="${TT_HOOK_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/time-tracker/agent-hook.env}"
+state_dir="${TT_HOOK_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/time-tracker}"
+pending="$state_dir/pairing.env"
+
+die() {
+  printf '%s\n' "$*" >&2
+  exit 1
+}
+
+# The value of a string or number field of a flat JSON object on stdin.
+field() {
+  sed -nE "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"?([^\",}]*)\"?.*/\1/p" | head -n 1
+}
+
+command -v curl >/dev/null || die "curl is needed; install it and run this again."
+
+start() {
+  local base
+  case "${1:-}" in
+    "") base="${TT_FUNCTIONS_URL:-$production_url}" ;;
+    production) base="$production_url" ;;
+    staging) base="$staging_url" ;;
+    http://* | https://*) base="$1" ;;
+    *) die "Unknown server \"$1\": use production, staging, or a functions URL." ;;
+  esac
+  base="${base%/}"
+
+  local sha256
+  if command -v sha256sum >/dev/null; then
+    sha256="sha256sum"
+  elif command -v shasum >/dev/null; then
+    sha256="shasum -a 256"
+  else
+    die "sha256sum or shasum is needed; install one and run this again."
+  fi
+
+  # tt_ and 256 random bits in base64url, the format the app draws.
+  local token hash
+  token="tt_$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n')"
+  [ "${#token}" -eq 46 ] || die "Could not draw a token."
+  hash="$(printf '%s' "$token" | $sha256 | cut -d' ' -f1)"
+
+  # The name the app shows, so the user can tell this computer from others.
+  local name
+  name="${TT_COMPUTER_NAME:-$(hostname 2>/dev/null || uname -n)}"
+  name="$(printf '%s' "$name" | tr -cd 'A-Za-z0-9 ._-' | cut -c1-100)"
+  [ -n "$name" ] || name="computer"
+
+  local reply code expires_in interval
+  reply="$(curl -sS --max-time 15 -X POST "$base/computer-pairing/start" \
+    -H 'content-type: application/json' \
+    --data-binary "{\"name\":\"$name\",\"token_hash\":\"$hash\",\"token_prefix\":\"${token:0:8}\"}")" ||
+    die "Could not reach $base."
+  code="$(field user_code <<<"$reply")"
+  expires_in="$(field expires_in <<<"$reply")"
+  interval="$(field interval <<<"$reply")"
+  [ -n "$code" ] || die "The server refused to start pairing: $reply"
+
+  umask 077
+  mkdir -p "$state_dir" || die "Could not create $state_dir."
+  # Quoted for the shell that reads it back: a computer name can hold spaces.
+  {
+    printf 'pending_token=%q\n' "$token"
+    printf 'pending_base=%q\n' "$base"
+    printf 'pending_name=%q\n' "$name"
+    printf 'pending_until=%q\n' "$(($(date +%s) + ${expires_in:-600}))"
+    printf 'pending_interval=%q\n' "${interval:-5}"
+  } >"$pending" || die "Could not save the pairing in $pending."
+
+  printf 'In the Time Tracker app, go to Settings → Integrations → API tokens →\n'
+  printf 'Connect a computer, and enter this code:\n\n'
+  printf '    %s-%s\n\n' "${code:0:4}" "${code:4:4}"
+  printf 'It is valid for %s minutes. Check that the app names this computer "%s".\n' \
+    "$((${expires_in:-600} / 60))" "$name"
+}
+
+wait_for_approval() {
+  [ -f "$pending" ] || die "Nothing to wait for. Run tt-connect start first."
+  local pending_token="" pending_base="" pending_name="" pending_until=0 pending_interval=5
+  # shellcheck source=/dev/null
+  . "$pending"
+
+  printf 'Waiting for you to approve "%s" in the app…\n' "$pending_name"
+  local status=""
+  while [ "$(date +%s)" -lt "$pending_until" ]; do
+    # The token goes to curl through a file descriptor, not its arguments,
+    # which any local user can read in `ps`.
+    status="$(curl -s --max-time 15 -X POST "$pending_base/computer-pairing/status" \
+      -H @<(printf 'authorization: Bearer %s\n' "$pending_token") | field status)"
+    case "$status" in
+      approved) break ;;
+      pending | "") ;; # "" is a dropped request; ask again.
+      *)
+        rm -f "$pending"
+        die "The code is no longer valid ($status). Run this again for a new one."
+        ;;
+    esac
+    sleep "$pending_interval"
+  done
+  if [ "$status" != approved ]; then
+    rm -f "$pending"
+    die "The code expired. Run this again for a new one."
+  fi
+
+  # Saved with any other settings in the file kept, readable only by the user.
+  umask 077
+  mkdir -p "$(dirname "$config_file")" || die "Could not create $(dirname "$config_file")."
+  if ! {
+    if [ -f "$config_file" ]; then
+      grep -vE '^(export[[:space:]]+)?TT_(API_TOKEN|HEARTBEAT_URL)=' "$config_file"
+    fi
+    printf 'TT_API_TOKEN=%s\n' "$pending_token"
+    printf 'TT_HEARTBEAT_URL=%s\n' "$pending_base/activity-heartbeat"
+  } >"$config_file.tmp" || ! mv "$config_file.tmp" "$config_file"; then
+    die "Could not save the token to $config_file."
+  fi
+  rm -f "$pending"
+
+  printf 'Connected. Activity from your agent sessions now goes to Time Tracker.\n'
+}
+
+case "${1:-}" in
+  start)
+    start "${2:-}"
+    ;;
+  wait)
+    wait_for_approval
+    ;;
+  -h | --help | help)
+    sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+  *)
+    start "${1:-}"
+    printf '\n'
+    wait_for_approval
+    ;;
+esac

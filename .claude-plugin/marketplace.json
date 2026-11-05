@@ -1,0 +1,15 @@
+{
+  "name": "time-tracker-agents",
+  "description": "Time Tracker for coding agents: sessions become suggested time entries.",
+  "owner": {
+    "name": "Light of Data",
+    "url": "https://github.com/lightofdata"
+  },
+  "plugins": [
+    {
+      "name": "time-tracker",
+      "source": "./claude",
+      "description": "Turns your Claude Code sessions into suggested time entries in the Time Tracker app, ready to confirm."
+    }
+  ]
+}

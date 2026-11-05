@@ -1,0 +1,35 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck claude/bin/tt-connect claude/scripts/tt-heartbeat.sh tests/*.sh
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            bash: bash
+          # The bash every Mac has, 3.2: the oldest the scripts must run on.
+          - os: macos-latest
+            bash: /bin/bash
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: tests
+        run: tests/run.sh
+        env:
+          TEST_BASH: ${{ matrix.bash }}
