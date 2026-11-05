@@ -78,8 +78,7 @@ class Server(ThreadingHTTPServer):
         # HTTPServer's own server_bind looks up the host's name, which can
         # take seconds on macOS; nothing here needs it.
         socketserver.TCPServer.server_bind(self)
-        self.server_name = "127.0.0.1"
-        self.server_port = self.server_address[1]
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 server = Server(("127.0.0.1", 0), Handler)

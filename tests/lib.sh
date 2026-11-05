@@ -26,6 +26,8 @@ setup() {
   if [ ! -f "$T/server/port" ]; then
     # Every test would fail the same way, and misleadingly: say why, once.
     printf 'The fake server did not start in 15 s:\n%s\n' "$(cat "$T/server.log")" >&2
+    # It may still be starting: stop it, so the run leaves nothing behind.
+    teardown
     exit 1
   fi
   PORT="$(cat "$T/server/port")"
