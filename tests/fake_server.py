@@ -14,6 +14,7 @@ to <dir>/requests.jsonl as {"route", "authorization", "body"}. It answers:
 
 import json
 import os
+import socketserver
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -72,7 +73,16 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+class Server(ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer's own server_bind looks up the host's name, which can
+        # take seconds on macOS; nothing here needs it.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = "127.0.0.1"
+        self.server_port = self.server_address[1]
+
+
+server = Server(("127.0.0.1", 0), Handler)
 with open(os.path.join(DIR, "port.tmp"), "w") as f:
     f.write(str(server.server_address[1]))
 os.rename(os.path.join(DIR, "port.tmp"), os.path.join(DIR, "port"))

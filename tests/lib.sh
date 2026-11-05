@@ -16,13 +16,18 @@ SCRIPT_BASH="${TEST_BASH:-bash}"
 setup() {
   T="$(mktemp -d)"
   mkdir -p "$T/home" "$T/server"
-  python3 "$ROOT/tests/fake_server.py" "$T/server" &
+  python3 "$ROOT/tests/fake_server.py" "$T/server" 2>"$T/server.log" &
   SERVER_PID=$!
   local _
-  for _ in $(seq 1 50); do
+  for _ in $(seq 1 150); do
     [ -f "$T/server/port" ] && break
     sleep 0.1
   done
+  if [ ! -f "$T/server/port" ]; then
+    # Every test would fail the same way, and misleadingly: say why, once.
+    printf 'The fake server did not start in 15 s:\n%s\n' "$(cat "$T/server.log")" >&2
+    exit 1
+  fi
   PORT="$(cat "$T/server/port")"
   BASE="http://127.0.0.1:$PORT/functions/v1"
 }
