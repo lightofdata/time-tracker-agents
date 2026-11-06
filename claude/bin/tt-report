@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# Records what the agent is working on, for Time Tracker (opt-in).
+#
+# Usage:
+#   tt-report [--issue N] [--title TEXT] [--summary TEXT]
+#
+# A TEXT of `-` is read from stdin, which is how the agent should pass one:
+# through a quoted heredoc (<<'EOF'), the shell expands nothing in it, so an
+# issue title with `backticks` or $(...) in it stays text and never runs.
+#
+# The agent runs this, through the plugin's report skill, when it learns which
+# issue the session's work is for and when it finishes a piece of work. It
+# sends nothing itself: it keeps the session's issue and title and its
+# summaries not yet sent, and the hook (tt-heartbeat.sh) sends them with the
+# following heartbeats. The issue and title go with every one, so each
+# suggested entry knows them; each summary goes once. In the app, an entry is
+# then named after the issue and described by the summaries.
+#
+# Nothing is recorded unless the user switched reporting on with
+# tt-reporting on: a summary is written from the conversation, and an issue
+# title can be confidential. Without it, this says so and does nothing.
+#
+# The report is kept per session, in
+# ~/.local/state/time-tracker/reports/<session id> and, for the summaries,
+# <session id>.summaries beside it, readable only by the user. The session
+# comes from CLAUDE_CODE_SESSION_ID, which Claude Code gives every command it
+# runs, so the agent never passes it.
+
+set -u
+
+state_dir="${TT_HOOK_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/time-tracker}"
+config_file="${TT_HOOK_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/time-tracker/agent-hook.env}"
+
+# The server keeps at most these; longer is cut there, so it is cut here
+# first, where the agent can see it.
+max_title=200
+max_summary=1000
+
+die() {
+  printf '%s\n' "$*" >&2
+  exit 1
+}
+
+# Whether the user switched reporting on: TT_REPORT_WORK=1 in the
+# environment, or in the config file, which is read, never run.
+reporting_on() {
+  local value="${TT_REPORT_WORK:-}"
+  if [ -z "$value" ] && [ -f "$config_file" ]; then
+    value="$(sed -nE 's/^[[:space:]]*(export[[:space:]]+)?TT_REPORT_WORK=//p' "$config_file" |
+      tail -n 1 | tr -d "\r\"' ")"
+  fi
+  [ "$value" = 1 ]
+}
+
+# $1 on one line, without control characters, trimmed and cut to $2 bytes.
+# It goes into an entry's description or a task's name. Bytes, because cut -c
+# counts bytes on Linux and characters on macOS; iconv then drops a character
+# the cut split, which would otherwise reach the server as invalid UTF-8. So
+# a title in Croatian may stop a little short of $2 characters, never past
+# them. Without iconv, the cut stays as it is.
+one_line() {
+  local cut
+  cut="$(printf '%s' "$1" | tr '\n\t' '  ' | tr -d '\000-\037\177' |
+    sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' | head -c "$2")"
+  if command -v iconv >/dev/null; then
+    # It reports the split character and exits 1 having dropped it.
+    cut="$(printf '%s' "$cut" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null)"
+  fi
+  printf '%s' "${cut% }"
+}
+
+# Sets text to $1, or to stdin where $1 is `-`, which only one option may use.
+stdin_used=0
+take_text() {
+  text="$1"
+  if [ "$text" = - ]; then
+    [ "$stdin_used" = 0 ] || die "Only one of --title and --summary can be read from stdin."
+    stdin_used=1
+    text="$(cat)"
+  fi
+}
+
+issue="" title="" summary="" text=""
+have_issue=0 have_title=0 have_summary=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --issue)
+      [ $# -ge 2 ] || die "--issue needs a number."
+      issue="${2#\#}"
+      have_issue=1
+      shift 2
+      ;;
+    --title)
+      [ $# -ge 2 ] || die "--title needs a text."
+      take_text "$2"
+      title="$(one_line "$text" "$max_title")"
+      have_title=1
+      shift 2
+      ;;
+    --summary)
+      [ $# -ge 2 ] || die "--summary needs a text."
+      take_text "$2"
+      summary="$(one_line "$text" "$max_summary")"
+      have_summary=1
+      shift 2
+      ;;
+    -h | --help)
+      sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *) die "Unknown argument: $1. Use --issue, --title and --summary." ;;
+  esac
+done
+[ $((have_issue + have_title + have_summary)) -gt 0 ] ||
+  die "Nothing to report: give --issue, --title or --summary."
+
+if ! reporting_on; then
+  printf 'Work reporting is off on this computer, so nothing was recorded. '
+  printf 'Do not report again in this session.\n'
+  exit 0
+fi
+
+if [ "$have_issue" = 1 ]; then
+  case "$issue" in
+    "" | *[!0-9]* | 0*) die "--issue must be an issue number, such as 625." ;;
+  esac
+  [ "${#issue}" -le 9 ] || die "--issue must be an issue number, such as 625."
+fi
+
+session="${CLAUDE_CODE_SESSION_ID:-}"
+case "$session" in
+  "" | *[!A-Za-z0-9-]*) die "No Claude Code session to report for." ;;
+esac
+
+umask 077
+mkdir -p "$state_dir/reports" || die "Could not create $state_dir/reports."
+report="$state_dir/reports/$session"
+
+# The issue and title, which the hook only reads. A title belongs to its
+# issue, so a new issue without a title drops the old one.
+if [ "$have_issue" = 1 ] || [ "$have_title" = 1 ]; then
+  field() {
+    [ -f "$report" ] && sed -n "s/^$1=//p" "$report" | tail -n 1
+  }
+  old_issue="$(field issue)"
+  old_title="$(field title)"
+  if [ "$have_issue" = 1 ]; then
+    if [ "$issue" != "$old_issue" ] && [ "$have_title" = 0 ]; then
+      old_title=""
+    fi
+  else
+    issue="$old_issue"
+  fi
+  [ "$have_title" = 1 ] || title="$old_title"
+
+  # Written whole and moved into place, so the hook never reads half of it.
+  if ! {
+    [ -z "$issue" ] || printf 'issue=%s\n' "$issue"
+    [ -z "$title" ] || printf 'title=%s\n' "$title"
+  } >"$report.tmp" || ! mv "$report.tmp" "$report"; then
+    die "Could not save the report in $report."
+  fi
+fi
+
+# Summaries are only ever appended, one a line, so every one finished before
+# the next heartbeat goes with it; the hook takes the file by renaming it.
+if [ -n "$summary" ]; then
+  printf '%s\n' "$summary" >>"$report.summaries" ||
+    die "Could not save the summary in $report.summaries."
+fi
+
+printf 'Recorded for Time Tracker.\n'

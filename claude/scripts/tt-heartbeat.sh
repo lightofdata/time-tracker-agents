@@ -21,6 +21,9 @@
 #
 # What is sent: the session id, the event, the time, and the repository and
 # branch the session runs in. Never the prompt, the transcript or the path.
+# Where the user switched work reporting on (tt-reporting), also what the
+# agent reported with tt-report: the issue, its title, and a summary of
+# finished work.
 #
 # A heartbeat that cannot be sent waits in a queue file and goes with the next
 # one that can. Problems are written to a log file instead of the screen.
@@ -35,6 +38,7 @@
 #   TT_HOOK_CONFIG    another config file
 #   TT_HOOK_STATE_DIR where the queue and log live
 #                     (default ~/.local/state/time-tracker)
+#   TT_REPORT_WORK=1  send what the agent reports; set by tt-reporting on
 #   TT_HOOK_SYNC=1    send in the foreground; for tests only
 
 exec 1>/dev/null 2>/dev/null
@@ -104,6 +108,7 @@ config_value() {
 if [ -f "$config_file" ]; then
   [ -n "${TT_API_TOKEN:-}" ] || TT_API_TOKEN="$(config_value TT_API_TOKEN)"
   [ -n "${TT_HEARTBEAT_URL:-}" ] || TT_HEARTBEAT_URL="$(config_value TT_HEARTBEAT_URL)"
+  [ -n "${TT_REPORT_WORK:-}" ] || TT_REPORT_WORK="$(config_value TT_REPORT_WORK)"
 fi
 
 command -v curl >/dev/null || {
@@ -158,12 +163,88 @@ if command -v git >/dev/null && git -C "$cwd" rev-parse --git-dir >/dev/null 2>&
   branch="$(git -C "$cwd" symbolic-ref --short -q HEAD 2>/dev/null)"
 fi
 
-line="{\"session_id\":$(json_string "$session_id")"
-line="$line,\"event\":\"$event\""
-line="$line,\"occurred_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
-[ -z "$repo" ] || line="$line,\"repo\":$(json_string "$repo")"
-[ -z "$branch" ] || line="$line,\"branch\":$(json_string "$branch")"
-line="$line}"
+occurred_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# What the agent reported about its work (tt-report), where the user switched
+# work reporting on. The issue and title, in the session's report file, go
+# with every heartbeat, so each suggested entry knows them. Summaries, one a
+# line in the file beside it, go once each and are then gone from it. The
+# queue keeps them, so a summary taken here is never lost to a failed send.
+report_file=""
+case "$session_id" in
+  *[!A-Za-z0-9-]*) ;;
+  *) report_file="$state_dir/reports/$session_id" ;;
+esac
+report_fields=""
+summaries=()
+if [ "${TT_REPORT_WORK:-}" = 1 ] && [ -n "$report_file" ]; then
+  if [ -f "$report_file" ]; then
+    report_issue="$(sed -n 's/^issue=//p' "$report_file" | tail -n 1)"
+    report_title="$(sed -n 's/^title=//p' "$report_file" | tail -n 1)"
+    case "$report_issue" in
+      "" | *[!0-9]*) ;;
+      *)
+        report_fields=",\"issue\":$report_issue"
+        [ -z "$report_title" ] ||
+          report_fields="$report_fields,\"title\":$(json_string "$report_title")"
+        ;;
+    esac
+  fi
+  # Taken by renaming the file, which tt-report only ever appends to: a
+  # summary it writes meanwhile starts a new file, for the next heartbeat.
+  taken="$report_file.summaries.$$"
+  if [ -f "$report_file.summaries" ] && mv "$report_file.summaries" "$taken"; then
+    while IFS= read -r summary || [ -n "$summary" ]; do
+      [ -z "$summary" ] || summaries+=("$summary")
+    done <"$taken"
+    rm -f "$taken"
+  fi
+fi
+
+# One heartbeat of event $1, with summary $2 if given, at $3 if given, else
+# at occurred_at.
+heartbeat() {
+  local l
+  l="{\"session_id\":$(json_string "$session_id")"
+  l="$l,\"event\":\"$1\",\"occurred_at\":\"${3:-$occurred_at}\""
+  [ -z "$repo" ] || l="$l,\"repo\":$(json_string "$repo")"
+  [ -z "$branch" ] || l="$l,\"branch\":$(json_string "$branch")"
+  l="$l$report_fields"
+  [ -z "${2:-}" ] || l="$l,\"summary\":$(json_string "$2")"
+  printf '%s}' "$l"
+}
+
+# The server keeps one summary a heartbeat, so several finished in one turn
+# go as several heartbeats of this event at this moment, the last summary on
+# the event's own. A session_end's go as agent_stop, which the server orders
+# before it: the first session_end closes the entry, and a summary on a later
+# one would be left out of it.
+#
+# Each a millisecond after the one before, from .001: the server stores a
+# heartbeat once per session, event and time, and takes a second one at the
+# same time for a resent copy, dropping it. Not from .000, which is when a
+# plain heartbeat of the same second is stored. The latest 100 at most, which
+# no turn comes near.
+lines=""
+count=${#summaries[@]}
+if [ "$count" -eq 0 ]; then
+  lines="$(heartbeat "$event")"
+else
+  extra_event="$event"
+  [ "$event" != session_end ] || extra_event=agent_stop
+  i=0
+  [ "$count" -le 100 ] || i=$((count - 100))
+  first=$i
+  while [ "$i" -lt "$count" ]; do
+    at="${occurred_at%Z}.$(printf '%03d' "$((i - first + 1))")Z"
+    if [ "$i" -lt "$((count - 1))" ]; then
+      lines="$lines$(heartbeat "$extra_event" "${summaries[$i]}" "$at")"$'\n'
+    else
+      lines="$lines$(heartbeat "$event" "${summaries[$i]}" "$at")"
+    fi
+    i=$((i + 1))
+  done
+fi
 
 mkdir -p "$state_dir" || exit 0
 # The umask covers only what is created from now on: a state directory left
@@ -172,7 +253,15 @@ chmod 700 "$state_dir"
 chmod 600 "$queue" "$log_file"
 # Built first and appended in one write, so two sessions' hooks firing
 # together cannot interleave inside a line.
-printf '%s\n' "$line" >>"$queue"
+printf '%s\n' "$lines" >>"$queue"
+
+# A session's report goes with the session; any a crashed session left behind
+# goes after a month.
+if [ "$event" = session_end ] && [ -n "$report_file" ]; then
+  rm -f "$report_file" "$report_file.summaries"
+elif [ "$event" = session_start ] && [ -d "$state_dir/reports" ]; then
+  find "$state_dir/reports" -type f -mtime +30 -exec rm -f {} + 2>/dev/null
+fi
 
 # Sends the queue in batches. Only one process does it at a time: parallel
 # sessions fire hooks together, and whichever holds the lock sends what the

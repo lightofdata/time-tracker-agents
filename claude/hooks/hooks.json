@@ -1,5 +1,5 @@
 {
-  "description": "Reports when a session starts and ends, when you send a prompt, and when Claude finishes answering. Never the prompt, the transcript or any path.",
+  "description": "Reports when a session starts and ends, when you send a prompt, and when Claude finishes answering. Never the prompt, the transcript or any path. With work reporting switched on, also asks Claude to report the issue and a summary of its work.",
   "hooks": {
     "SessionStart": [
       {
@@ -8,6 +8,11 @@
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/tt-heartbeat.sh session_start",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/tt-report-note.sh",
+            "timeout": 5
           }
         ]
       }
