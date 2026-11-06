@@ -166,6 +166,7 @@ test_saves_values_quoted_for_a_shell() {
   connect "$BASE" || fail "exit $?: $(cat "$T/stderr")"
   # Read back by a shell, the file must give the values unchanged.
   local url
+  # shellcheck disable=SC2016 # the script is for the inner shell to expand
   url="$(env -i bash -c '. "$1"; printf %s "$TT_HEARTBEAT_URL"' _ "$T/home/$CONFIG_REL")"
   assert_eq "$url" "$BASE/activity-heartbeat" "heartbeat URL read by a shell"
 }

@@ -38,6 +38,10 @@
 #   TT_HOOK_SYNC=1    send in the foreground; for tests only
 
 exec 1>/dev/null 2>/dev/null
+# Every step here is best effort: one that fails must never end the hook.
+# errexit or nounset can arrive from the user's environment through an
+# exported SHELLOPTS, so they are turned off rather than assumed off.
+set +eu
 # The queue and log name the user's repositories and branches: private to the
 # user, as the config is.
 umask 077

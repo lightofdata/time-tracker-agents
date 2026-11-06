@@ -62,6 +62,17 @@ test_prints_nothing_and_exits_0_even_when_it_cannot_send() {
   assert_eq "$(cat "$T/stdout" "$T/stderr")" "" "output on garbage"
 }
 
+test_runs_to_the_end_with_errexit_and_nounset_from_the_environment() {
+  # An exported SHELLOPTS turns them on in the hook's shell. With no queue or
+  # log yet, its first chmod fails; the heartbeat must be sent regardless.
+  env -i PATH="$PATH" HOME="$T/home" SHELLOPTS=errexit:nounset TT_HOOK_SYNC=1 \
+    TT_HOOK_STATE_DIR="$T/state" TT_API_TOKEN="$TOKEN" \
+    TT_HEARTBEAT_URL="$BASE/activity-heartbeat" \
+    "$SCRIPT_BASH" "$HOOK" <<<'{"hook_event_name":"UserPromptSubmit","session_id":"s1"}'
+  assert_eq "$?" 0 "exit code"
+  assert_eq "$(heartbeats 'h["event"]')" "prompt" "sent"
+}
+
 test_sends_the_repo_and_branch_never_the_prompt_or_the_path() {
   repo_with_origin git@github.com:lightofdata/time_tracker.git
   hook "{\"session_id\":\"s1\",\"transcript_path\":\"/home/me/t.jsonl\",\"cwd\":\"$T/work\",\"hook_event_name\":\"UserPromptSubmit\",\"prompt\":\"secret plans\"}"
