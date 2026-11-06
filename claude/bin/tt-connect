@@ -32,6 +32,9 @@
 
 set -u
 
+# The app's Connect a computer screen tells these two apart by the same
+# addresses (ComputerPairingService.connectCommand in lightofdata/time_tracker)
+# and shows the command that names them: change both together.
 production_url="https://vvytmkxwkgeagtavping.supabase.co/functions/v1"
 # Where the app's test builds connect, so testers can type a name, not a URL.
 staging_url="https://xmtayjffukasyjctgnqo.supabase.co/functions/v1"
@@ -104,8 +107,8 @@ start() {
     printf 'pending_interval=%q\n' "${interval:-5}"
   } >"$pending" || die "Could not save the pairing in $pending."
 
-  printf 'In the Time Tracker app, go to Settings → Integrations → API tokens →\n'
-  printf 'Connect a computer, and enter this code:\n\n'
+  printf 'In the Time Tracker app, go to Settings → Integrations → Connected\n'
+  printf 'computers → Connect a computer, and enter this code:\n\n'
   printf '    %s-%s\n\n' "${code:0:4}" "${code:4:4}"
   printf 'It is valid for %s minutes. Check that the app names this computer "%s".\n' \
     "$((${expires_in:-600} / 60))" "$name"

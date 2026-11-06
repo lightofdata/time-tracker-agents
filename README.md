@@ -27,8 +27,10 @@ Then, in Claude Code:
 ```
 
 It shows a code such as `WDJB-MJHT`. In the app, go to **Settings →
-Integrations → API tokens → Connect a computer**, enter the code, check that
-the computer's name is right, and approve. The code is valid for 10 minutes.
+Integrations → Connected computers → Connect a computer**, enter the code, check
+that the computer's name is right, and approve. The code is valid for 10
+minutes. That screen also shows the command to run, for the server your build
+of the app uses.
 
 New sessions are tracked from then on. Each computer is connected once, for
 every project on it.
@@ -36,6 +38,38 @@ every project on it.
 **Testing a pre-release build of the app?** It talks to a test server; connect
 to that one instead with `/time-tracker:connect staging`. A computer reports to
 one server at a time, and connecting again switches it.
+
+## Connecting with a connection token
+
+For where nobody can run `/time-tracker:connect` and approve it in the app: CI,
+or a machine image built ahead of time.
+
+1. In the app, go to **Settings → Integrations → Connected computers →
+   Advanced → Create a connection token**, and give it a name. The app shows
+   two lines, the token and your server's address. Copy them: the token is
+   shown only this once.
+2. On the computer, with the plugin installed, save the two lines where its
+   hook reads them, readable only by you:
+
+   ```bash
+   mkdir -p ~/.config/time-tracker
+   cat > ~/.config/time-tracker/agent-hook.env   # paste, then Ctrl-D
+   chmod 600 ~/.config/time-tracker/agent-hook.env
+   ```
+
+   The file looks like this:
+
+   ```bash
+   TT_API_TOKEN=tt_…
+   TT_HEARTBEAT_URL=https://<server>/functions/v1/activity-heartbeat
+   ```
+
+Instead of the file, `TT_API_TOKEN` and `TT_HEARTBEAT_URL` can be set in the
+environment, which wins over the file: in CI, keep the token in the CI's
+secrets.
+
+The computer appears in the app's list under the name you gave the token.
+Disconnecting it there stops it at once.
 
 ## What is sent
 
@@ -85,13 +119,13 @@ or, on macOS, `shasum`. No `jq`, Node or Python.
 
 ## Is it working?
 
-- In the app, the computer's token shows **Last used** within a few minutes of
-  your first prompt.
+- In the app, under Connected computers, the computer shows **Last used**
+  within a few minutes of your first prompt.
 - `~/.local/state/time-tracker/agent-hook.log` has a line for every problem: a
   missing token, a refused batch, a failed send. No log file means nothing has
   gone wrong.
-- A `401` in the log means the token was revoked: run `/time-tracker:connect`
-  again.
+- A `401` in the log means the computer was disconnected in the app: run
+  `/time-tracker:connect` again.
 
 If you set up the hook by hand before this plugin existed, remove those four
 entries from `~/.claude/settings.json`, or each event is reported twice.
@@ -103,7 +137,7 @@ claude plugin uninstall time-tracker@time-tracker-agents
 rm -rf ~/.config/time-tracker ~/.local/state/time-tracker
 ```
 
-Then revoke the computer's token in the app.
+Then disconnect the computer in the app.
 
 ## Development
 
