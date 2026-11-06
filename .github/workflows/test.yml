@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: shellcheck
-        run: shellcheck claude/bin/tt-connect claude/scripts/tt-heartbeat.sh tests/*.sh
+        run: shellcheck claude/bin/* claude/scripts/*.sh tests/*.sh
 
   test:
     strategy:

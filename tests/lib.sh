@@ -9,6 +9,9 @@
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOOK="$ROOT/claude/scripts/tt-heartbeat.sh"
 CONNECT="$ROOT/claude/bin/tt-connect"
+REPORT="$ROOT/claude/bin/tt-report"
+REPORTING="$ROOT/claude/bin/tt-reporting"
+REPORT_NOTE="$ROOT/claude/scripts/tt-report-note.sh"
 # The bash the scripts run under. CI sets /bin/bash on macOS, which is 3.2:
 # the oldest the scripts must run on, and what a Mac without Homebrew has.
 SCRIPT_BASH="${TEST_BASH:-bash}"

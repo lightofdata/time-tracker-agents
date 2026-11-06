@@ -89,13 +89,42 @@ Each carries the session id, the event, the time, and the repository
 (`owner/name` from the `origin` remote, or the folder name) and branch the
 session runs in.
 
-**It never sends** your prompts, the transcript, or any file path.
+**It never sends** your prompts, the transcript, or any file path. With
+[work reporting](#reporting-the-work-optional) switched on, it also sends the
+issue Claude reports, its title, and Claude's summaries of finished work.
 
 The server groups each session's heartbeats into stretches of work. A stretch
 ends after 15 minutes without a prompt from you, or where the branch changes,
 and becomes one suggested entry. In the app, rules decide which project and
 task a repository's time goes to; a branch such as `fix/123-login` can go to
 the task for issue `#123`.
+
+## Reporting the work (optional)
+
+Off by default. Switched on, Claude also reports which issue it is working
+on, the issue's title, and a one-line summary of each piece of work it
+finishes. In the app, a suggested entry is then named after the issue, such
+as `#625 Agent work reports`, with the summaries as its description, which you
+can edit before confirming. An issue the agent reports wins over the one the
+branch names.
+
+```text
+/time-tracker:reporting on
+```
+
+It applies to this computer, from the next session on. `/time-tracker:reporting
+off` switches it off again and deletes anything not yet sent;
+`/time-tracker:reporting status` says which it is.
+
+**What this sends:** the summary is written by Claude from your conversation,
+and an issue title can be a client's confidential information. Both leave your
+computer. Your prompts and the transcript still never do.
+
+How it works: each session starts with a two-line note asking Claude to report
+through the plugin's `report` skill, which runs `tt-report`. The hook then
+sends the issue and title with every heartbeat and each summary once. Claude
+may skip a report, so nothing depends on one arriving: the branch remains the
+baseline.
 
 ## How it behaves
 
@@ -117,6 +146,7 @@ or, on macOS, `shasum`. No `jq`, Node or Python.
 | --------------------------------------- | -------------------------------------------- |
 | `~/.config/time-tracker/agent-hook.env` | the token and server address, private to you |
 | `~/.local/state/time-tracker/`          | the send queue, and a log of problems        |
+| `~/.local/state/time-tracker/reports/`  | each session's report, until it is sent      |
 
 `$XDG_CONFIG_HOME` and `$XDG_STATE_HOME` are honoured when set.
 

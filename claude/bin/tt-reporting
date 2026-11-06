@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# Switches work reporting on or off on this computer (opt-in, off by default).
+#
+# Usage:
+#   tt-reporting on      start reporting, and say what is sent
+#   tt-reporting off     stop, and delete what was kept to send
+#   tt-reporting status  say whether it is on
+#
+# With reporting on, each Claude Code session is asked to report which issue
+# it is working on and to summarize the work it finishes (tt-report), and the
+# hook sends that to Time Tracker with the activity. In the app, a suggested
+# entry is then named after the issue and described by the summaries.
+#
+# It is the user's switch, not the agent's: the plugin's report skill lets the
+# agent run tt-report, never this.
+
+set -u
+
+state_dir="${TT_HOOK_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/time-tracker}"
+config_file="${TT_HOOK_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/time-tracker/agent-hook.env}"
+# The hook's (tt-heartbeat.sh): change them together.
+queue="$state_dir/agent-hook-queue.jsonl"
+lock="$state_dir/agent-hook.lock"
+
+umask 077
+
+# Takes the agent's reports out of the heartbeats still waiting to be sent,
+# which offline can be a day's worth; the activity itself still goes.
+#
+# A pattern is enough: the hook writes the issue, title and summary last in a
+# line, in that order, and a quote inside a JSON string is always escaped, so
+# `,"issue":` cannot start inside a title. It holds the hook's send lock, so no
+# batch is in flight, and takes the queue over as the hook does, so a
+# heartbeat queued meanwhile starts a new queue rather than being lost.
+# Returns 1 if a send kept the lock for 30 seconds.
+clean_queue() {
+  [ -f "$queue" ] || return 0
+  local tries=0
+  until mkdir "$lock" 2>/dev/null; do
+    # A lock older than two minutes belongs to a process that died.
+    if [ -n "$(find "$lock" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then
+      rmdir "$lock" 2>/dev/null
+      continue
+    fi
+    tries=$((tries + 1))
+    [ "$tries" -le 30 ] || return 1
+    sleep 1
+  done
+  local taken="$queue.cleaning.$$"
+  if mv "$queue" "$taken" 2>/dev/null; then
+    sed -E \
+      -e 's/,"summary":"([^"\\]|\\.)*"}$/}/' \
+      -e 's/,"issue":[0-9]+(,"title":"([^"\\]|\\.)*")?}$/}/' \
+      "$taken" >>"$queue" && rm -f "$taken"
+  fi
+  rmdir "$lock" 2>/dev/null
+  return 0
+}
+
+die() {
+  printf '%s\n' "$*" >&2
+  exit 1
+}
+
+# The config file without TT_REPORT_WORK, then $1 as its value, if any. The
+# token and server address in it are kept as they are.
+save_setting() {
+  mkdir -p "$(dirname "$config_file")" || die "Could not create $(dirname "$config_file")."
+  if ! {
+    if [ -f "$config_file" ]; then
+      grep -vE '^[[:space:]]*(export[[:space:]]+)?TT_REPORT_WORK=' "$config_file"
+    fi
+    [ -z "$1" ] || printf 'TT_REPORT_WORK=%s\n' "$1"
+  } >"$config_file.tmp" || ! mv "$config_file.tmp" "$config_file"; then
+    die "Could not save the setting in $config_file."
+  fi
+}
+
+is_on() {
+  [ -f "$config_file" ] &&
+    [ "$(sed -nE 's/^[[:space:]]*(export[[:space:]]+)?TT_REPORT_WORK=//p' "$config_file" |
+      tail -n 1 | tr -d "\r\"' ")" = 1 ]
+}
+
+case "${1:-status}" in
+  on)
+    save_setting 1
+    cat <<'EOF'
+Work reporting is on for this computer.
+
+From the next session on, Claude is asked to report to Time Tracker:
+  - the issue it is working on, and the issue's title
+  - a one-line summary of each piece of work it finishes
+
+These go to the server with the session's activity. In the app, a suggested
+entry is then named after the issue, e.g. "#625 Agent work reports", and the
+summaries become its description, which you can edit before confirming.
+
+The summary is written by Claude from your conversation, and an issue title
+can be a client's confidential information: both leave this computer. Your
+prompts and the transcript themselves still never do.
+
+Switch it off at any time with /time-tracker:reporting off.
+EOF
+    ;;
+  off)
+    save_setting ""
+    rm -rf "$state_dir/reports"
+    printf 'Work reporting is off for this computer. Nothing more is reported.\n'
+    if clean_queue; then
+      printf 'Any report not yet sent was deleted; the activity itself still goes.\n'
+    else
+      printf 'A send was under way, so reports already waiting to be sent may\n'
+      printf 'still go. Run this again in a minute to delete any left.\n'
+    fi
+    printf 'Entries already in the app keep what they had.\n'
+    ;;
+  status)
+    if is_on; then
+      printf 'Work reporting is on for this computer.\n'
+    else
+      printf 'Work reporting is off for this computer.\n'
+    fi
+    ;;
+  -h | --help | help)
+    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+  *) die "Use on, off or status." ;;
+esac
