@@ -62,6 +62,17 @@ test_prints_nothing_and_exits_0_even_when_it_cannot_send() {
   assert_eq "$(cat "$T/stdout" "$T/stderr")" "" "output on garbage"
 }
 
+test_runs_to_the_end_with_errexit_and_nounset_from_the_environment() {
+  # An exported SHELLOPTS turns them on in the hook's shell. With no queue or
+  # log yet, its first chmod fails; the heartbeat must be sent regardless.
+  env -i PATH="$PATH" HOME="$T/home" SHELLOPTS=errexit:nounset TT_HOOK_SYNC=1 \
+    TT_HOOK_STATE_DIR="$T/state" TT_API_TOKEN="$TOKEN" \
+    TT_HEARTBEAT_URL="$BASE/activity-heartbeat" \
+    "$SCRIPT_BASH" "$HOOK" <<<'{"hook_event_name":"UserPromptSubmit","session_id":"s1"}'
+  assert_eq "$?" 0 "exit code"
+  assert_eq "$(heartbeats 'h["event"]')" "prompt" "sent"
+}
+
 test_sends_the_repo_and_branch_never_the_prompt_or_the_path() {
   repo_with_origin git@github.com:lightofdata/time_tracker.git
   hook "{\"session_id\":\"s1\",\"transcript_path\":\"/home/me/t.jsonl\",\"cwd\":\"$T/work\",\"hook_event_name\":\"UserPromptSubmit\",\"prompt\":\"secret plans\"}"
@@ -153,6 +164,54 @@ test_reads_its_config_and_keeps_its_state_in_the_xdg_directories() {
 
   assert_eq "$(requests 'r["authorization"]')" "Bearer $TOKEN" "authorization"
   assert_eq "$(lines "$T/home/.local/state/time-tracker/agent-hook-queue.jsonl")" 1 "queued"
+}
+
+test_reads_its_config_without_running_it() {
+  # The hook runs on every prompt: a config that ran as shell would run there.
+  mkdir -p "$T/home/.config/time-tracker"
+  {
+    printf 'touch %s/ran\n' "$T"
+    # shellcheck disable=SC2016 # the $(touch) is the bait, meant literally
+    printf 'TT_OTHER=$(touch %s/ran)\n' "$T"
+    printf 'export TT_API_TOKEN="%s"\n' "$TOKEN"
+    printf "TT_HEARTBEAT_URL='%s'\n" "$BASE/activity-heartbeat"
+  } >"$T/home/.config/time-tracker/agent-hook.env"
+
+  UNCONFIGURED=1 DEFAULT_PATHS=1 hook '{"hook_event_name":"UserPromptSubmit","session_id":"s1"}'
+
+  [ ! -e "$T/ran" ] || fail "ran a line of the config"
+  assert_eq "$(requests 'r["authorization"]')" "Bearer $TOKEN" "authorization"
+}
+
+test_reads_a_config_value_without_its_line_ending_or_trailing_spaces() {
+  mkdir -p "$T/home/.config/time-tracker"
+  printf 'TT_API_TOKEN=%s  \r\nTT_HEARTBEAT_URL="%s"\r\n' "$TOKEN" "$BASE/activity-heartbeat" \
+    >"$T/home/.config/time-tracker/agent-hook.env"
+
+  UNCONFIGURED=1 DEFAULT_PATHS=1 hook '{"hook_event_name":"UserPromptSubmit","session_id":"s1"}'
+
+  assert_eq "$(requests 'r["authorization"]')" "Bearer $TOKEN" "authorization"
+}
+
+test_keeps_its_queue_and_log_private() {
+  echo 503 >"$T/server/status"
+  hook '{"hook_event_name":"UserPromptSubmit","session_id":"s1"}'
+  assert_eq "$(mode_of "$T/state")" 700 "state directory mode"
+  assert_eq "$(mode_of "$T/state/agent-hook-queue.jsonl")" 600 "queue mode"
+  assert_eq "$(mode_of "$T/state/agent-hook.log")" 600 "log mode"
+}
+
+test_makes_an_earlier_versions_queue_and_log_private() {
+  # 0.1.1 and earlier left them readable by everyone.
+  mkdir -p "$T/state"
+  chmod 755 "$T/state"
+  : >"$T/state/agent-hook-queue.jsonl"
+  : >"$T/state/agent-hook.log"
+  chmod 644 "$T/state/agent-hook-queue.jsonl" "$T/state/agent-hook.log"
+  hook '{"hook_event_name":"UserPromptSubmit","session_id":"s1"}'
+  assert_eq "$(mode_of "$T/state")" 700 "state directory mode"
+  assert_eq "$(mode_of "$T/state/agent-hook-queue.jsonl")" 600 "queue mode"
+  assert_eq "$(mode_of "$T/state/agent-hook.log")" 600 "log mode"
 }
 
 test_queues_without_a_token_and_sends_once_there_is_one() {

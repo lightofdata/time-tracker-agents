@@ -47,9 +47,39 @@ die() {
   exit 1
 }
 
-# The value of a string or number field of a flat JSON object on stdin.
+# The value of a string or number field of a flat JSON object on stdin: a
+# string whole, commas included, a number up to the next `,` or `}`.
 field() {
-  sed -nE "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"?([^\",}]*)\"?.*/\1/p" | head -n 1
+  sed -nE "s/.*\"$1\"[[:space:]]*:[[:space:]]*(\"([^\"]*)\"|([^\",}[:space:]]*)).*/\2\3/p" | head -n 1
+}
+
+# $1, the server's text, reduced to characters that can neither run in a
+# shell nor pass for instructions to the agent showing it.
+printable() {
+  printf '%s' "$1" | tr -cd 'A-Za-z0-9 ,._:-' | cut -c1-100
+}
+
+# $1 if it is a whole number of at most four digits, without a leading zero
+# (which arithmetic reads as octal), else $2. A server's number goes into
+# shell arithmetic, which runs any command hidden in it.
+number_or() {
+  case "$1" in
+    "" | *[!0-9]* | ?????* | 0?*) printf '%s' "$2" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+# Dies unless $1 is a functions URL this may talk to: HTTPS, or HTTP to this
+# computer only, so the token never crosses a network in the clear; and only
+# characters a URL needs, so the saved config holds nothing a shell would run.
+check_base() {
+  local url_re='^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?$'
+  [[ "$1" =~ $url_re ]] || die "Not a server URL this can use: $(printable "$1")"
+  case "$1" in
+    https://*) ;;
+    http://localhost | http://localhost[:/]* | http://127.0.0.1 | http://127.0.0.1[:/]*) ;;
+    *) die "Only a server on this computer may use http://; use https://." ;;
+  esac
 }
 
 command -v curl >/dev/null || die "curl is needed; install it and run this again."
@@ -64,6 +94,7 @@ start() {
     *) die "Unknown server \"$1\": use production, staging, or a functions URL." ;;
   esac
   base="${base%/}"
+  check_base "$base"
 
   local sha256
   if command -v sha256sum >/dev/null; then
@@ -86,15 +117,22 @@ start() {
   name="$(printf '%s' "$name" | tr -cd 'A-Za-z0-9 ._-' | cut -c1-100)"
   [ -n "$name" ] || name="computer"
 
-  local reply code expires_in interval
-  reply="$(curl -sS --max-time 15 -X POST "$base/computer-pairing/start" \
+  local reply http_status code expires_in interval error
+  # The HTTP status follows the body on a line of its own, for a refusal that
+  # says nothing itself: a proxy's HTML page, or a 404 from a wrong URL.
+  reply="$(curl -sS --max-time 15 -w '\n%{http_code}' -X POST "$base/computer-pairing/start" \
     -H 'content-type: application/json' \
     --data-binary "{\"name\":\"$name\",\"token_hash\":\"$hash\",\"token_prefix\":\"${token:0:8}\"}")" ||
     die "Could not reach $base."
+  http_status="${reply##*$'\n'}"
+  reply="${reply%$'\n'*}"
   code="$(field user_code <<<"$reply")"
-  expires_in="$(field expires_in <<<"$reply")"
-  interval="$(field interval <<<"$reply")"
-  [ -n "$code" ] || die "The server refused to start pairing: $reply"
+  expires_in="$(number_or "$(field expires_in <<<"$reply")" 600)"
+  interval="$(number_or "$(field interval <<<"$reply")" 5)"
+  if ! [[ "$code" =~ ^[A-Z0-9]{8}$ ]]; then
+    error="$(printable "$(field error <<<"$reply")")"
+    die "The server refused to start pairing: ${error:-no reason given} (HTTP $(printable "$http_status"))."
+  fi
 
   umask 077
   mkdir -p "$state_dir" || die "Could not create $state_dir."
@@ -103,15 +141,15 @@ start() {
     printf 'pending_token=%q\n' "$token"
     printf 'pending_base=%q\n' "$base"
     printf 'pending_name=%q\n' "$name"
-    printf 'pending_until=%q\n' "$(($(date +%s) + ${expires_in:-600}))"
-    printf 'pending_interval=%q\n' "${interval:-5}"
+    printf 'pending_until=%q\n' "$(($(date +%s) + expires_in))"
+    printf 'pending_interval=%q\n' "$interval"
   } >"$pending" || die "Could not save the pairing in $pending."
 
   printf 'In the Time Tracker app, go to Settings → Integrations → Connected\n'
   printf 'computers → Connect a computer, and enter this code:\n\n'
   printf '    %s-%s\n\n' "${code:0:4}" "${code:4:4}"
   printf 'It is valid for %s minutes. Check that the app names this computer "%s".\n' \
-    "$((${expires_in:-600} / 60))" "$name"
+    "$((expires_in / 60))" "$name"
 }
 
 wait_for_approval() {
@@ -119,6 +157,10 @@ wait_for_approval() {
   local pending_token="" pending_base="" pending_name="" pending_until=0 pending_interval=5
   # shellcheck source=/dev/null
   . "$pending"
+  # A pairing file written by an earlier version did not check these.
+  check_base "$pending_base"
+  case "$pending_until" in "" | *[!0-9]*) pending_until=0 ;; esac
+  pending_interval="$(number_or "$pending_interval" 5)"
 
   printf 'Waiting for you to approve "%s" in the app…\n' "$pending_name"
   local status=""
@@ -132,7 +174,7 @@ wait_for_approval() {
       pending | "") ;; # "" is a dropped request; ask again.
       *)
         rm -f "$pending"
-        die "The code is no longer valid ($status). Run this again for a new one."
+        die "The code is no longer valid ($(printable "$status")). Run this again for a new one."
         ;;
     esac
     sleep "$pending_interval"
@@ -149,8 +191,8 @@ wait_for_approval() {
     if [ -f "$config_file" ]; then
       grep -vE '^(export[[:space:]]+)?TT_(API_TOKEN|HEARTBEAT_URL)=' "$config_file"
     fi
-    printf 'TT_API_TOKEN=%s\n' "$pending_token"
-    printf 'TT_HEARTBEAT_URL=%s\n' "$pending_base/activity-heartbeat"
+    printf 'TT_API_TOKEN=%q\n' "$pending_token"
+    printf 'TT_HEARTBEAT_URL=%q\n' "$pending_base/activity-heartbeat"
   } >"$config_file.tmp" || ! mv "$config_file.tmp" "$config_file"; then
     die "Could not save the token to $config_file."
   fi

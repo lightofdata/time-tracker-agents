@@ -5,7 +5,9 @@ Usage: python3 fake_server.py <dir>
 Listens on a free local port, written to <dir>/port, and appends each request
 to <dir>/requests.jsonl as {"route", "authorization", "body"}. It answers:
 
-  .../computer-pairing/start   a code, valid 600 s, polled with no delay
+  .../computer-pairing/start   a code, valid 600 s, polled with no delay; or
+                               the raw body in <dir>/start_reply, if any, with
+                               the status code in <dir>/start_status (200)
   .../computer-pairing/status  the first line of <dir>/statuses, removing it
                                unless it is the last
   anything else (heartbeats)   the status code in <dir>/status (default 200),
@@ -48,7 +50,11 @@ class Handler(BaseHTTPRequestHandler):
             )
 
         if route == "start":
-            self.reply(200, {"user_code": "WDJBMJHT", "expires_in": 600, "interval": 0})
+            raw = read("start_reply", None)
+            if raw is not None:
+                self.reply_raw(int(read("start_status", "200")), raw.encode())
+            else:
+                self.reply(200, {"user_code": "WDJBMJHT", "expires_in": 600, "interval": 0})
         elif route == "status":
             path = os.path.join(DIR, "statuses")
             with open(path) as f:
@@ -62,7 +68,9 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(int(read("status", "200")), {})
 
     def reply(self, code, body):
-        data = json.dumps(body).encode()
+        self.reply_raw(code, json.dumps(body).encode())
+
+    def reply_raw(self, code, data):
         self.send_response(code)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(data)))

@@ -62,6 +62,10 @@ assert_not_contains() { # haystack needle [what]
   esac
 }
 
+mode_of() { # file: its permissions, e.g. 600
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
+}
+
 # A field of each request (or of each heartbeat sent), one per line, read with
 # python3 so the tests do not trust the scripts' own JSON handling.
 requests() { # python expression over r, the request
