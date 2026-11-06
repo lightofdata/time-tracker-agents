@@ -64,6 +64,9 @@ or a machine image built ahead of time.
    TT_HEARTBEAT_URL=https://<server>/functions/v1/activity-heartbeat
    ```
 
+The hook reads the file but never runs it, so a value is taken literally:
+`$(...)` or a trailing `# comment` becomes part of it.
+
 Instead of the file, `TT_API_TOKEN` and `TT_HEARTBEAT_URL` can be set in the
 environment, which wins over the file: in CI, keep the token in the CI's
 secrets.
@@ -150,7 +153,8 @@ claude plugin validate ./claude
 To try a change, add this folder as a marketplace instead:
 `claude plugin marketplace add ./`. To connect to any other server, such as a
 local one, pass its functions URL: `/time-tracker:connect
-http://127.0.0.1:<port>/functions/v1`.
+http://127.0.0.1:<port>/functions/v1`. Plain `http://` is accepted only for
+`localhost` and `127.0.0.1`, so the token never crosses a network unencrypted.
 
 ## License
 

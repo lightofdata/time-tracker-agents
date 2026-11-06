@@ -38,6 +38,9 @@
 #   TT_HOOK_SYNC=1    send in the foreground; for tests only
 
 exec 1>/dev/null 2>/dev/null
+# The queue and log name the user's repositories and branches: private to the
+# user, as the config is.
+umask 077
 
 state_dir="${TT_HOOK_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/time-tracker}"
 config_file="${TT_HOOK_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/time-tracker/agent-hook.env}"
@@ -80,14 +83,23 @@ json_string() {
   printf '"%s"' "$value"
 }
 
+# The value of setting $1 in the config file: the last `NAME=value` or
+# `export NAME=value` line, with trailing spaces and a Windows line ending
+# dropped, then one pair of surrounding quotes. The file is read, never run:
+# this script runs on every prompt, so anything in the file that ran as shell
+# would run on every prompt too. So `$(...)` or a `# comment` is taken as
+# part of the value.
+config_value() {
+  sed -nE 's/^[[:space:]]*(export[[:space:]]+)?'"$1"'=//p' "$config_file" |
+    tail -n 1 |
+    tr -d '\r' |
+    sed -E "s/[[:space:]]+\$//; s/^\"(.*)\"\$/\\1/; s/^'(.*)'\$/\\1/"
+}
+
 # Values already exported win over the file.
 if [ -f "$config_file" ]; then
-  _token="${TT_API_TOKEN:-}"
-  _url="${TT_HEARTBEAT_URL:-}"
-  # shellcheck source=/dev/null
-  . "$config_file"
-  TT_API_TOKEN="${_token:-${TT_API_TOKEN:-}}"
-  TT_HEARTBEAT_URL="${_url:-${TT_HEARTBEAT_URL:-}}"
+  [ -n "${TT_API_TOKEN:-}" ] || TT_API_TOKEN="$(config_value TT_API_TOKEN)"
+  [ -n "${TT_HEARTBEAT_URL:-}" ] || TT_HEARTBEAT_URL="$(config_value TT_HEARTBEAT_URL)"
 fi
 
 command -v curl >/dev/null || {
@@ -150,6 +162,10 @@ line="$line,\"occurred_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
 line="$line}"
 
 mkdir -p "$state_dir" || exit 0
+# The umask covers only what is created from now on: a state directory left
+# by 0.1.1 or earlier, and its queue and log, were readable by everyone.
+chmod 700 "$state_dir"
+chmod 600 "$queue" "$log_file"
 # Built first and appended in one write, so two sessions' hooks firing
 # together cannot interleave inside a line.
 printf '%s\n' "$line" >>"$queue"

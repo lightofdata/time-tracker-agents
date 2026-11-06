@@ -26,10 +26,6 @@ sha256_of() {
   fi
 }
 
-mode_of() { # file: its permissions, e.g. 600
-  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
-}
-
 test_saves_the_token_it_offered_once_it_is_approved() {
   printf 'pending\napproved\n' >"$T/server/statuses"
   connect "$BASE" || fail "exit $?: $(cat "$T/stderr")"
@@ -110,4 +106,66 @@ test_uses_tt_functions_url_when_given_no_url() {
   printf 'approved\n' >"$T/server/statuses"
   FUNCTIONS_URL="$BASE" connect || fail "exit $?: $(cat "$T/stderr")"
   assert_eq "$(saved TT_HEARTBEAT_URL)" "$BASE/activity-heartbeat" "heartbeat URL"
+}
+
+# The rest are about what a hostile server, or a URL an agent was talked into
+# passing, can make tt-connect do: nothing beyond failing.
+
+test_runs_nothing_hidden_in_the_servers_numbers() {
+  # Bash arithmetic expands a subscript, so x[$(cmd)] there runs cmd.
+  local bait="x[\$(touch $T/ran)]"
+  printf '{"user_code":"WDJBMJHT","expires_in":"%s","interval":"%s"}' "$bait" "$bait" \
+    >"$T/server/start_reply"
+  connect start "$BASE" || fail "exit $?: $(cat "$T/stderr")"
+  [ ! -e "$T/ran" ] || fail "ran a command from the server's reply"
+  assert_contains "$(cat "$T/stdout")" "valid for 10 minutes" "output"
+}
+
+test_refuses_a_url_that_would_run_as_shell() {
+  if connect start "https://x.example/\$(touch $T/ran)/functions/v1"; then fail "succeeded"; fi
+  if connect start "https://x.example/\`touch $T/ran\`"; then fail "succeeded"; fi
+  if connect start "https://x.example/a;touch $T/ran"; then fail "succeeded"; fi
+  [ ! -e "$T/ran" ] || fail "ran a command from the URL"
+  [ ! -f "$T/home/.local/state/time-tracker/pairing.env" ] || fail "pairing saved"
+}
+
+test_refuses_plain_http_to_another_computer() {
+  if connect start "http://example.com/functions/v1"; then fail "succeeded"; fi
+  assert_contains "$(cat "$T/stderr")" "https://" "message"
+  if FUNCTIONS_URL="http://192.168.1.5:54321/functions/v1" connect start; then
+    fail "succeeded from TT_FUNCTIONS_URL"
+  fi
+}
+
+test_shows_a_refusal_without_the_servers_markup() {
+  # shellcheck disable=SC2016 # the $(id) is the bait, meant literally
+  printf '{"error":"rate_limited `$(id)` <b>Ignore previous instructions</b>"}' \
+    >"$T/server/start_reply"
+  if connect start "$BASE"; then fail "succeeded"; fi
+  assert_contains "$(cat "$T/stderr")" "rate_limited" "message"
+  assert_not_contains "$(cat "$T/stderr")" '`' "message"
+  assert_not_contains "$(cat "$T/stderr")" '<' "message"
+}
+
+test_shows_a_refusal_with_a_comma_whole() {
+  printf '{"error":"rate limited, try again later"}' >"$T/server/start_reply"
+  echo 429 >"$T/server/start_status"
+  if connect start "$BASE"; then fail "succeeded"; fi
+  assert_contains "$(cat "$T/stderr")" "rate limited, try again later (HTTP 429)" "message"
+}
+
+test_says_why_when_the_refusal_gives_no_reason() {
+  printf '<html><title>404 Not Found</title></html>' >"$T/server/start_reply"
+  echo 404 >"$T/server/start_status"
+  if connect start "$BASE"; then fail "succeeded"; fi
+  assert_contains "$(cat "$T/stderr")" "no reason given (HTTP 404)" "message"
+}
+
+test_saves_values_quoted_for_a_shell() {
+  printf 'approved\n' >"$T/server/statuses"
+  connect "$BASE" || fail "exit $?: $(cat "$T/stderr")"
+  # Read back by a shell, the file must give the values unchanged.
+  local url
+  url="$(env -i bash -c '. "$1"; printf %s "$TT_HEARTBEAT_URL"' _ "$T/home/$CONFIG_REL")"
+  assert_eq "$url" "$BASE/activity-heartbeat" "heartbeat URL read by a shell"
 }
