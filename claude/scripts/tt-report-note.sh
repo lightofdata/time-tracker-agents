@@ -24,5 +24,6 @@ fi
 [ "$value" = 1 ] || exit 0
 
 printf '%s\n' \
-  "Time Tracker records this session's time. When you know which issue the work is for, and each time you finish a piece of work, report it with the time-tracker:report skill."
+  "Time Tracker records this session's time for the user's timesheet." \
+  "When you know which issue the work is for, and each time you finish a piece of work, report it with the time-tracker:report skill."
 exit 0

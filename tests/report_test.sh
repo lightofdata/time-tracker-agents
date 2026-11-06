@@ -58,6 +58,8 @@ test_reporting_on_says_what_is_sent_and_keeps_the_token() {
   assert_contains "$config" "TT_REPORT_WORK=1" "config"
   assert_eq "$(mode_of "$T/home/.config/time-tracker/agent-hook.env")" 600 "config mode"
   assert_contains "$(note)" "time-tracker:report" "session start note"
+  # It is in every session's conversation: two lines, as the README promises.
+  assert_eq "$(note | wc -l | tr -d ' ')" 2 "session start note lines"
 }
 
 test_reporting_off_stops_it_and_deletes_what_waits() {
